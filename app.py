@@ -10,14 +10,25 @@ st.title("Face Recognition Attendance System")
 DATASET_PATH = "dataset"
 ATTENDANCE_FILE = "attendance.csv"
 
+# -------------------------------
+# Create attendance file if first run
+# -------------------------------
+if not os.path.exists(ATTENDANCE_FILE):
+    df = pd.DataFrame(columns=["Name","Date","Time"])
+    df.to_csv(ATTENDANCE_FILE,index=False)
+
+# -------------------------------
+# Load dataset images
+# -------------------------------
 known_faces = []
 known_names = []
 
-# Load dataset
 for person_name in os.listdir(DATASET_PATH):
+
     person_folder = os.path.join(DATASET_PATH, person_name)
 
     if os.path.isdir(person_folder):
+
         for image_name in os.listdir(person_folder):
 
             image_path = os.path.join(person_folder, image_name)
@@ -27,97 +38,141 @@ for person_name in os.listdir(DATASET_PATH):
             if img is None:
                 continue
 
-            img = cv2.resize(img, (200,200))
+            img = cv2.resize(img,(200,200))
 
             known_faces.append(img)
             known_names.append(person_name)
 
 st.write("Loaded Students:", list(set(known_names)))
 
+# -------------------------------
+# Face detector
+# -------------------------------
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
+# -------------------------------
+# Camera input
+# -------------------------------
 uploaded_file = st.camera_input("Take a picture")
 
 if uploaded_file is not None:
 
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    captured_img = cv2.imdecode(file_bytes, 1)
-    captured_img = cv2.resize(captured_img,(200,200))
+    frame = cv2.imdecode(file_bytes, 1)
 
-    st.image(captured_img, caption="Captured Image")
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    best_score = 999999999
-    best_match = None
-    best_dataset_image = None
+    faces = face_cascade.detectMultiScale(gray,1.3,5)
 
-    for i, face in enumerate(known_faces):
+    if len(faces) == 0:
+        st.error("No face detected")
+    else:
 
-        difference = np.sum(np.abs(face - captured_img))
+        for (x,y,w,h) in faces:
 
-        if difference < best_score:
-            best_score = difference
-            best_match = known_names[i]
-            best_dataset_image = face
+            face_img = frame[y:y+h,x:x+w]
+            face_img = cv2.resize(face_img,(200,200))
 
-    THRESHOLD = 45000000
+            best_score = 999999999
+            best_match = None
+            best_dataset_image = None
 
-    st.write("Similarity Score:", best_score)
+            for i,known_face in enumerate(known_faces):
 
-    if best_score < THRESHOLD:
+                difference = np.sum(np.abs(known_face - face_img))
 
-        now = datetime.now()
-        date = now.strftime("%Y-%m-%d")
-        time = now.strftime("%H:%M:%S")
+                if difference < best_score:
+                    best_score = difference
+                    best_match = known_names[i]
+                    best_dataset_image = known_face
 
-        # Check if attendance file exists
-        if os.path.exists(ATTENDANCE_FILE):
+            THRESHOLD = 45000000
 
-            df = pd.read_csv(ATTENDANCE_FILE)
+            confidence = max(0,100 - (best_score / THRESHOLD) * 100)
 
-            if "Date" not in df.columns:
-                df["Date"] = ""
+            # draw box
+            cv2.rectangle(frame,(x,y),(x+w,y+h),(0,255,0),2)
 
-            duplicate = ((df["Name"] == best_match) & (df["Date"] == date)).any()
+            if best_score < THRESHOLD:
 
-            if duplicate:
-                st.warning(f"{best_match} attendance already marked today")
+                label = f"{best_match} ({confidence:.2f}%)"
+                cv2.putText(frame,label,(x,y-10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,(0,255,0),2)
+
+                now = datetime.now()
+                date = now.strftime("%Y-%m-%d")
+                time = now.strftime("%H:%M:%S")
+
+                df = pd.read_csv(ATTENDANCE_FILE)
+
+                duplicate = ((df["Name"] == best_match) &
+                             (df["Date"] == date)).any()
+
+                if duplicate:
+                    st.warning(f"{best_match} attendance already marked today")
+
+                else:
+
+                    new_entry = pd.DataFrame(
+                        [[best_match,date,time]],
+                        columns=["Name","Date","Time"]
+                    )
+
+                    new_entry.to_csv(
+                        ATTENDANCE_FILE,
+                        mode='a',
+                        header=False,
+                        index=False
+                    )
+
+                    st.success(f"Attendance marked for {best_match}")
+
+                st.subheader("Match Verification")
+
+                col1,col2 = st.columns(2)
+
+                with col1:
+                    st.image(face_img,caption="Captured Face")
+
+                with col2:
+                    st.image(best_dataset_image,
+                             caption=f"Dataset Image ({best_match})")
 
             else:
-                new_entry = pd.DataFrame([[best_match,date,time]],columns=["Name","Date","Time"])
-                new_entry.to_csv(ATTENDANCE_FILE,mode='a',header=False,index=False)
-                st.success(f"Attendance marked for {best_match}")
 
-        else:
+                cv2.putText(frame,"Unknown",
+                            (x,y-10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,(0,0,255),2)
 
-            df = pd.DataFrame([[best_match,date,time]],columns=["Name","Date","Time"])
-            df.to_csv(ATTENDANCE_FILE,index=False)
+                st.error("Unknown person - not in dataset")
 
-            st.success(f"Attendance marked for {best_match}")
+    st.image(frame,channels="BGR",caption="Detection Result")
 
-        st.subheader("Match Verification")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.image(captured_img, caption="Captured Image")
-
-        with col2:
-            st.image(best_dataset_image, caption=f"Matched Dataset Image ({best_match})")
-
-    else:
-        st.error("Unknown Person - Not in Dataset")
-
-
+# -------------------------------
 # Show attendance table
-if os.path.exists(ATTENDANCE_FILE):
+# -------------------------------
+st.subheader("Attendance Records")
 
-    st.subheader("Attendance Records")
+try:
 
     df = pd.read_csv(ATTENDANCE_FILE)
 
-    st.dataframe(df)
+    if df.empty:
+        st.info("No attendance marked yet")
+    else:
 
-    st.download_button(
-        label="Download Attendance CSV",
-        data=df.to_csv(index=False),
-        file_name="attendance.csv",
-        mime="text/csv"
-    )
+        st.dataframe(df)
+
+        st.download_button(
+            label="Download Attendance CSV",
+            data=df.to_csv(index=False),
+            file_name="attendance.csv",
+            mime="text/csv"
+        )
+
+except:
+    st.warning("Attendance file not ready yet")
