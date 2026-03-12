@@ -3,22 +3,31 @@ import cv2
 import os
 import numpy as np
 import pandas as pd
+import sqlite3
 from datetime import datetime
 
 st.title("Face Recognition Attendance System")
 
 DATASET_PATH = "dataset"
-ATTENDANCE_FILE = "attendance.csv"
 
 # -------------------------------
-# Create attendance file if first run
+# DATABASE CONNECTION
 # -------------------------------
-if not os.path.exists(ATTENDANCE_FILE):
-    df = pd.DataFrame(columns=["Name","Date","Time"])
-    df.to_csv(ATTENDANCE_FILE,index=False)
+conn = sqlite3.connect("attendance.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS attendance(
+name TEXT,
+date TEXT,
+time TEXT
+)
+""")
+
+conn.commit()
 
 # -------------------------------
-# Load dataset images
+# LOAD DATASET
 # -------------------------------
 known_faces = []
 known_names = []
@@ -46,14 +55,14 @@ for person_name in os.listdir(DATASET_PATH):
 st.write("Loaded Students:", list(set(known_names)))
 
 # -------------------------------
-# Face detector
+# FACE DETECTOR
 # -------------------------------
 face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 )
 
 # -------------------------------
-# Camera input
+# CAMERA INPUT
 # -------------------------------
 uploaded_file = st.camera_input("Take a picture")
 
@@ -68,6 +77,7 @@ if uploaded_file is not None:
 
     if len(faces) == 0:
         st.error("No face detected")
+
     else:
 
         for (x,y,w,h) in faces:
@@ -92,41 +102,40 @@ if uploaded_file is not None:
 
             confidence = max(0,100 - (best_score / THRESHOLD) * 100)
 
-            # draw box
             cv2.rectangle(frame,(x,y),(x+w,y+h),(0,255,0),2)
 
             if best_score < THRESHOLD:
 
                 label = f"{best_match} ({confidence:.2f}%)"
+
                 cv2.putText(frame,label,(x,y-10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8,(0,255,0),2)
+                cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,255,0),2)
 
                 now = datetime.now()
                 date = now.strftime("%Y-%m-%d")
                 time = now.strftime("%H:%M:%S")
 
-                df = pd.read_csv(ATTENDANCE_FILE)
+                # -------------------------------
+                # DUPLICATE CHECK
+                # -------------------------------
+                cursor.execute("""
+                SELECT * FROM attendance
+                WHERE name=? AND date=?
+                """,(best_match,date))
 
-                duplicate = ((df["Name"] == best_match) &
-                             (df["Date"] == date)).any()
+                result = cursor.fetchone()
 
-                if duplicate:
+                if result:
+
                     st.warning(f"{best_match} attendance already marked today")
 
                 else:
 
-                    new_entry = pd.DataFrame(
-                        [[best_match,date,time]],
-                        columns=["Name","Date","Time"]
-                    )
+                    cursor.execute("""
+                    INSERT INTO attendance VALUES(?,?,?)
+                    """,(best_match,date,time))
 
-                    new_entry.to_csv(
-                        ATTENDANCE_FILE,
-                        mode='a',
-                        header=False,
-                        index=False
-                    )
+                    conn.commit()
 
                     st.success(f"Attendance marked for {best_match}")
 
@@ -139,40 +148,32 @@ if uploaded_file is not None:
 
                 with col2:
                     st.image(best_dataset_image,
-                             caption=f"Dataset Image ({best_match})")
+                    caption=f"Dataset Image ({best_match})")
 
             else:
 
-                cv2.putText(frame,"Unknown",
-                            (x,y-10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8,(0,0,255),2)
+                cv2.putText(frame,"Unknown",(x,y-10),
+                cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,255),2)
 
-                st.error("Unknown person - not in dataset")
+                st.error("Unknown person")
 
     st.image(frame,channels="BGR",caption="Detection Result")
 
 # -------------------------------
-# Show attendance table
+# SHOW DATABASE RECORDS
 # -------------------------------
-st.subheader("Attendance Records")
+st.subheader("Attendance Records (Admin View)")
 
-try:
+cursor.execute("SELECT * FROM attendance")
 
-    df = pd.read_csv(ATTENDANCE_FILE)
+rows = cursor.fetchall()
 
-    if df.empty:
-        st.info("No attendance marked yet")
-    else:
+if rows:
 
-        st.dataframe(df)
+    df = pd.DataFrame(rows,columns=["Name","Date","Time"])
 
-        st.download_button(
-            label="Download Attendance CSV",
-            data=df.to_csv(index=False),
-            file_name="attendance.csv",
-            mime="text/csv"
-        )
+    st.dataframe(df)
 
-except:
-    st.warning("Attendance file not ready yet")
+else:
+
+    st.info("No attendance records yet")
