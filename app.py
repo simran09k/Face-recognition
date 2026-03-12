@@ -72,6 +72,9 @@ if uploaded_file is not None:
 
             df = pd.read_csv(ATTENDANCE_FILE)
 
+            if "Date" not in df.columns:
+                df["Date"] = ""
+
             duplicate = ((df["Name"] == best_match) & (df["Date"] == date)).any()
 
             if duplicate:
